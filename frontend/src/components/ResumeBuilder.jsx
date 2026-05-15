@@ -19,7 +19,7 @@ const ResumeBuilder = () => {
   const handleDownload = async () => {
     setIsGenerating(true);
     try {
-      const response = await fetch('http://localhost:5000/api/generate-resume-pdf', {
+      const response = await fetch('https://career-enhancer-backend.onrender.com/api/generate-resume-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)

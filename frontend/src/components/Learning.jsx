@@ -16,7 +16,7 @@ const Learning = () => {
     setRoadmapData(null);
 
     try {
-      const response = await fetch('http://localhost:5000/api/learning-path', {
+      const response = await fetch('https://career-enhancer-backend.onrender.com/api/learning-path', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic: topic })

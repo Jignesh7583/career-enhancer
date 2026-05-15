@@ -46,7 +46,7 @@ const CoverLetter = () => {
 
     try {
       // Send the package to our new Flask route!
-      const response = await fetch('http://localhost:5000/api/generate-cover-letter', {
+      const response = await fetch('https://career-enhancer-backend.onrender.com/api/generate-cover-letter', {
         method: 'POST',
         body: formData,
       });
