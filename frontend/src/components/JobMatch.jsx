@@ -39,7 +39,7 @@ const JobMatch = () => {
     formData.append('job_description', jobDescription);
 
     try {
-      const response = await fetch('https://career-enhancer-backend.onrender.com/api/match-resume', {
+      const response = await fetch('https://career-enhancer-us-backend.onrender.com/api/match-resume', {
         method: 'POST',
         body: formData,
       });

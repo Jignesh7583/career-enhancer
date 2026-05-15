@@ -39,7 +39,7 @@ const ResumeAnalyzer = () => {
 
     try {
       // Sending the file to your Flask backend!
-      const response = await fetch('https://career-enhancer-backend.onrender.com/api/upload-resume', {
+      const response = await fetch('https://career-enhancer-us-backend.onrender.com/api/upload-resume', {
         method: 'POST',
         body: formData,
       });

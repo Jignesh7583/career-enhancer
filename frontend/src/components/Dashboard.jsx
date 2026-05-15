@@ -22,7 +22,7 @@ const Dashboard = () => {
       try {
         // Ask Flask for the data belonging to this specific email
         const email = user.primaryEmailAddress.emailAddress;
-        const response = await fetch(`https://career-enhancer-backend.onrender.com/api/dashboard-data?email=${email}`);
+        const response = await fetch(`https://career-enhancer-us-backend.onrender.com/api/dashboard-data?email=${email}`);
         const data = await response.json();
         
         if (response.ok && data.has_data) {

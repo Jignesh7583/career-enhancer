@@ -47,7 +47,7 @@ const Recruiters = () => {
     });
 
     try {
-      const response = await fetch('https://career-enhancer-backend.onrender.com/api/bulk-screen', {
+      const response = await fetch('https://career-enhancer-us-backend.onrender.com/api/bulk-screen', {
         method: 'POST',
         body: formData,
       });

@@ -37,7 +37,7 @@ const AIAssistant = () => {
 
     try {
       // Send the message and the user's email to Flask
-      const response = await fetch('https://career-enhancer-backend.onrender.com/api/chat', {
+      const response = await fetch('https://career-enhancer-us-backend.onrender.com/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
