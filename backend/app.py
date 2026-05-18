@@ -10,6 +10,10 @@ import google.generativeai as genai
 import io
 from fpdf import FPDF
 from flask import send_file
+import gc
+
+from flask import send_file
+import time
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -435,7 +439,6 @@ def chat_assistant():
         print(f"🛑 THE REAL ERROR IS: {str(e)}")
         return jsonify({"error": f"AI processing failed. Error: {str(e)}"}), 500
 
-
 @app.route('/api/bulk-screen', methods=['POST'])
 def bulk_screen():
     # 1. Get the Job Description and the LIST of files
@@ -504,6 +507,22 @@ def bulk_screen():
 
             except Exception as e:
                 print(f"🛑 AI failed for {file.filename}. Error: {str(e)}")
+            
+            finally:
+                # --- RAM & RATE LIMIT FIXES ---
+                # This 'finally' block always runs, ensuring memory is cleared 
+                # even if the try block above fails with an error!
+                
+                # Delete large strings to free up the 512MB limit
+                if 'extracted_text' in locals(): del extracted_text
+                if 'prompt' in locals(): del prompt
+                if 'response' in locals(): del response
+                
+                # Empty the trash can
+                gc.collect() 
+                
+                # Pause for 1 second to respect Gemini API limits
+                time.sleep(1)
 
     # 3. Sort the leaderboard so the highest score is at the top (1st place)
     # The 'lambda' function simply tells Python: "Sort this list based on the match_score number"
@@ -514,7 +533,7 @@ def bulk_screen():
         "message": "Bulk screening complete!",
         "leaderboard": leaderboard
     })
-
+    
 
 @app.route('/api/learning-path', methods=['POST'])
 def generate_learning_path():
@@ -629,70 +648,86 @@ def get_insights():
 def generate_resume_pdf():
     try:
         data = request.json
+        template = data.get('template', 'classic')
 
-        # 1. Initialize the PDF document
+        # Initialize PDF
         pdf = FPDF()
         pdf.add_page()
         pdf.set_auto_page_break(auto=True, margin=15)
 
-        # 2. Add Name (Header)
-        pdf.set_font("Arial", 'B', 24)
+        # 1. Define Template Styles dynamically based on React selection
+        if template == 'modern':
+            r, g, b = 15, 118, 110  # Teal accent
+            font_title = 'Arial'
+        elif template == 'bold':
+            r, g, b = 124, 58, 237  # Violet accent
+            font_title = 'Arial'
+        elif template == 'minimal':
+            r, g, b = 55, 65, 81    # Dark Gray
+            font_title = 'Times'
+        else: # classic
+            r, g, b = 30, 58, 95    # Navy accent
+            font_title = 'Times'
+
+        # 2. Build the Header (Name & Contact)
+        pdf.set_font(font_title, 'B', 24)
+        pdf.set_text_color(r, g, b)
         pdf.cell(0, 10, data.get('fullName', 'Your Name'), ln=True, align='C')
 
-        # 3. Add Contact Info
-        pdf.set_font("Arial", '', 11)
-        contact_info = f"{data.get('email', '')}  |  {data.get('phone', '')}"
-        pdf.cell(0, 10, contact_info, ln=True, align='C')
-        pdf.ln(5)  # Add a small line break
+        pdf.set_font('Arial', '', 10)
+        pdf.set_text_color(100, 100, 100)
+        
+        # Safely combine contact info
+        contact_parts = [data.get('email'), data.get('phone'), data.get('location'), data.get('linkedin')]
+        contact_info = " | ".join([p for p in contact_parts if p])
+        pdf.cell(0, 6, contact_info, ln=True, align='C')
+        pdf.ln(5)
 
-        # 4. Add Summary
-        if data.get('summary'):
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, "Professional Summary", ln=True)
-            # Draw a separator line
-            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        # 3. Helper function to draw sections elegantly
+        def add_section(title, content):
+            if not content:
+                return
+            # Section Title
+            pdf.set_font(font_title, 'B', 14)
+            pdf.set_text_color(r, g, b)
+            pdf.cell(0, 8, title.upper(), ln=True)
+            
+            # Divider Line
+            pdf.set_draw_color(r, g, b)
+            pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 190, pdf.get_y())
             pdf.ln(3)
-            pdf.set_font("Arial", '', 11)
-            pdf.multi_cell(0, 7, data.get('summary', ''))
+
+            # Section Content
+            pdf.set_font('Arial', '', 11)
+            pdf.set_text_color(50, 50, 50)
+            pdf.multi_cell(0, 6, str(content))
             pdf.ln(5)
 
-        # 5. Add Experience
-        if data.get('experience'):
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, "Experience", ln=True)
-            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-            pdf.ln(3)
-            pdf.set_font("Arial", '', 11)
-            pdf.multi_cell(0, 7, data.get('experience', ''))
-            pdf.ln(5)
+        # 4. Add all sections from React
+        add_section("Professional Summary", data.get('summary'))
+        add_section("Experience", data.get('experience'))
+        add_section("Education", data.get('education'))
+        add_section("Projects", data.get('projects'))
+        add_section("Skills", data.get('skills'))
+        add_section("Certifications", data.get('certifications'))
 
-        # 6. Add Skills
-        if data.get('skills'):
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, "Core Skills", ln=True)
-            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-            pdf.ln(3)
-            pdf.set_font("Arial", '', 11)
-            pdf.multi_cell(0, 7, data.get('skills', ''))
+        # 5. Output PDF to a temporary buffer and send to browser
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+        pdf_buffer = io.BytesIO(pdf_bytes)
+        pdf_buffer.seek(0)
 
-        # 7. Convert PDF to a byte stream to send to the frontend
-        # output(dest='S') returns the PDF as a string (latin-1 encoded), which we convert to bytes
-        pdf_bytes = pdf.output(dest='S').encode('latin-1')
-        buffer = io.BytesIO(pdf_bytes)
-        buffer.seek(0)
-
-        # 8. Send the file to the user for download!
+        safe_name = str(data.get('fullName', 'Resume')).replace(' ', '_')
+        
         return send_file(
-            buffer,
+            pdf_buffer,
             as_attachment=True,
-            download_name="My_ATS_Resume.pdf",
-            mimetype="application/pdf"
+            download_name=f"{safe_name}_ATS_Resume.pdf",
+            mimetype='application/pdf'
         )
 
     except Exception as e:
-        print(f"🛑 PDF Generation Error: {str(e)}")
-        return jsonify({"error": "Failed to generate PDF."}), 500
-
+        print(f"PDF Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
