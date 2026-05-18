@@ -52,6 +52,7 @@ def get_next_api_key():
     return key_to_use
 # ------------------------------
 
+
 def get_db_connection():
     try:
         connection = mysql.connector.connect(
@@ -436,6 +437,7 @@ def chat_assistant():
         print(f"🛑 THE REAL ERROR IS: {str(e)}")
         return jsonify({"error": f"AI processing failed. Error: {str(e)}"}), 500
 
+
 @app.route('/api/bulk-screen', methods=['POST'])
 def bulk_screen():
     # 1. Get the Job Description and the LIST of files
@@ -504,20 +506,23 @@ def bulk_screen():
 
             except Exception as e:
                 print(f"🛑 AI failed for {file.filename}. Error: {str(e)}")
-            
+
             finally:
                 # --- RAM & RATE LIMIT FIXES ---
-                # This 'finally' block always runs, ensuring memory is cleared 
+                # This 'finally' block always runs, ensuring memory is cleared
                 # even if the try block above fails with an error!
-                
+
                 # Delete large strings to free up the 512MB limit
-                if 'extracted_text' in locals(): del extracted_text
-                if 'prompt' in locals(): del prompt
-                if 'response' in locals(): del response
-                
+                if 'extracted_text' in locals():
+                    del extracted_text
+                if 'prompt' in locals():
+                    del prompt
+                if 'response' in locals():
+                    del response
+
                 # Empty the trash can
-                gc.collect() 
-                
+                gc.collect()
+
                 # Pause for 1 second to respect Gemini API limits
                 time.sleep(1)
 
@@ -530,7 +535,7 @@ def bulk_screen():
         "message": "Bulk screening complete!",
         "leaderboard": leaderboard
     })
-    
+
 
 @app.route('/api/learning-path', methods=['POST'])
 def generate_learning_path():
@@ -647,6 +652,26 @@ def generate_resume_pdf():
         data = request.json
         template = data.get('template', 'classic')
 
+        # --- THE FIX: Text Cleaner ---
+        # This translates fancy Word/Mac punctuation into safe standard text
+        def clean_text(text):
+            if not text:
+                return ""
+            text = str(text)
+            replacements = {
+                '\u2018': "'", '\u2019': "'",  # Smart single quotes/apostrophes
+                '\u201c': '"', '\u201d': '"',  # Smart double quotes
+                '\u2013': '-', '\u2014': '-',  # En-dash and Em-dash
+                '\u2022': '-',                 # Bullets
+                '\u2026': '...',               # Ellipsis
+                '\u00A0': ' '                  # Non-breaking space
+            }
+            for search, replace in replacements.items():
+                text = text.replace(search, replace)
+
+            # This forcibly removes any other unknown characters so the server never crashes
+            return text.encode('latin-1', 'ignore').decode('latin-1')
+
         # Initialize PDF
         pdf = FPDF()
         pdf.add_page()
@@ -662,21 +687,23 @@ def generate_resume_pdf():
         elif template == 'minimal':
             r, g, b = 55, 65, 81    # Dark Gray
             font_title = 'Times'
-        else: # classic
+        else:  # classic
             r, g, b = 30, 58, 95    # Navy accent
             font_title = 'Times'
 
         # 2. Build the Header (Name & Contact)
         pdf.set_font(font_title, 'B', 24)
         pdf.set_text_color(r, g, b)
-        pdf.cell(0, 10, data.get('fullName', 'Your Name'), ln=True, align='C')
+        pdf.cell(0, 10, clean_text(
+            data.get('fullName', 'Your Name')), ln=True, align='C')
 
         pdf.set_font('Arial', '', 10)
         pdf.set_text_color(100, 100, 100)
-        
+
         # Safely combine contact info
-        contact_parts = [data.get('email'), data.get('phone'), data.get('location'), data.get('linkedin')]
-        contact_info = " | ".join([p for p in contact_parts if p])
+        contact_parts = [data.get('email'), data.get(
+            'phone'), data.get('location'), data.get('linkedin')]
+        contact_info = " | ".join([clean_text(p) for p in contact_parts if p])
         pdf.cell(0, 6, contact_info, ln=True, align='C')
         pdf.ln(5)
 
@@ -687,8 +714,8 @@ def generate_resume_pdf():
             # Section Title
             pdf.set_font(font_title, 'B', 14)
             pdf.set_text_color(r, g, b)
-            pdf.cell(0, 8, title.upper(), ln=True)
-            
+            pdf.cell(0, 8, clean_text(title).upper(), ln=True)
+
             # Divider Line
             pdf.set_draw_color(r, g, b)
             pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 190, pdf.get_y())
@@ -697,7 +724,7 @@ def generate_resume_pdf():
             # Section Content
             pdf.set_font('Arial', '', 11)
             pdf.set_text_color(50, 50, 50)
-            pdf.multi_cell(0, 6, str(content))
+            pdf.multi_cell(0, 6, clean_text(content))
             pdf.ln(5)
 
         # 4. Add all sections from React
@@ -713,8 +740,9 @@ def generate_resume_pdf():
         pdf_buffer = io.BytesIO(pdf_bytes)
         pdf_buffer.seek(0)
 
-        safe_name = str(data.get('fullName', 'Resume')).replace(' ', '_')
-        
+        safe_name = clean_text(
+            data.get('fullName', 'Resume')).replace(' ', '_')
+
         return send_file(
             pdf_buffer,
             as_attachment=True,
@@ -724,7 +752,8 @@ def generate_resume_pdf():
 
     except Exception as e:
         print(f"PDF Error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}, 500
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
