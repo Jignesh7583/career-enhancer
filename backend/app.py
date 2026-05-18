@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import mysql.connector
 from mysql.connector import Error
@@ -9,10 +9,7 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 import io
 from fpdf import FPDF
-from flask import send_file
 import gc
-
-from flask import send_file
 import time
 
 # Load environment variables from the .env file
