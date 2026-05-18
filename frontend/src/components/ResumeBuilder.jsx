@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
-  Download, Loader2, User, Mail, Phone, Briefcase, Code, FileText,
-  MapPin, Linkedin, Github, GraduationCap, Award, Plus, Trash2,
+  Download, Loader2, User, Briefcase, Code,
+  GraduationCap, Plus, Trash2,
   ChevronDown, ChevronUp, Palette, Check, Eye, Layers
 } from 'lucide-react';
 
