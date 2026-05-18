@@ -1,5 +1,9 @@
-import { useState, useRef } from 'react';
-import { UploadCloud, FileText, TrendingUp, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import {
+  Download, Loader2, User, Briefcase, Code,
+  GraduationCap, Plus, Trash2,
+  ChevronDown, ChevronUp, Palette, Check, Eye, Layers
+} from 'lucide-react';
 import { useUser } from '@clerk/clerk-react';
 
 const ResumeAnalyzer = () => {
