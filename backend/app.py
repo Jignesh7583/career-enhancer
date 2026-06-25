@@ -10,7 +10,6 @@ import google.generativeai as genai
 import io
 from fpdf import FPDF
 import gc
-import docx
 import time
 
 # Load environment variables from the .env file
