@@ -325,78 +325,213 @@ def generate_cover_letter():
 
     return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
 
+
 @app.route('/api/match-resume', methods=['POST'])
 def match_resume():
+    # ── 1. Validate inputs ──────────────────────────────────────
     if 'file' not in request.files:
         return jsonify({"error": "No resume file uploaded"}), 400
 
-    file = request.files['file']
-    job_description = request.form.get('job_description', '')
+    file            = request.files['file']
+    job_description = request.form.get('job_description', '').strip()
 
-    if not job_description.strip():
+    if not job_description:
         return jsonify({"error": "Please paste a Job Description."}), 400
-
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
+    if not file.filename.lower().endswith('.pdf'):
+        return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
 
-    if file and file.filename.endswith('.pdf'):
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-        file.save(filepath)
+    # ── 2. Save & extract text ──────────────────────────────────
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    file.save(filepath)
 
-        # 1. Extract Text from Resume
-        extracted_text = ""
+    extracted_text = ""
+    try:
+        with open(filepath, 'rb') as pdf_file:
+            reader = PyPDF2.PdfReader(pdf_file)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    extracted_text += text
+    except Exception as e:
+        return jsonify({"error": f"Failed to read PDF: {str(e)}"}), 500
+
+    if not extracted_text.strip():
+        return jsonify({"error": "Could not extract text from PDF. Ensure it is not a scanned image."}), 400
+
+    # ── 3. Call Gemini ──────────────────────────────────────────
+    try:
+        active_key = get_next_api_key()
+        genai.configure(api_key=active_key)
+
+        model = genai.GenerativeModel(
+            'gemini-2.5-flash',
+            generation_config={"response_mime_type": "application/json"}
+        )
+
+        prompt = f"""
+You are a strict, senior ATS (Applicant Tracking System) engine combined with an expert technical recruiter.
+Analyze the Resume against the Job Description and return a JSON object.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCORING RULES — follow exactly, do NOT override:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 1 — Count critical skills/technologies mentioned in the JD that are ABSENT from the resume.
+Step 2 — Set match_score using this table:
+  • 0–1 missing  →  match_score: 90–95
+  • 2–4 missing  →  match_score: 80–89
+  • 5–7 missing  →  match_score: 70–79
+  • 8+  missing  →  match_score: below 70
+Step 3 — Set sub-scores:
+  • skills_match     → % of required technical skills found in resume (integer 0–100)
+  • experience_match → % alignment of required years/domain/roles  (integer 0–100)
+  • education_match  → % match of required degrees/certifications  (integer 0–100)
+  • projects_match   → % of required project types covered by resume (integer 0–100)
+
+KEYWORD FORMAT RULES:
+  • matched_keywords and missing_keywords must be SHORT skill names (1–3 words max).
+    e.g. "SQL", "Power BI", "Data Quality", "Dashboard Optimization"
+  • NEVER use full sentences as keywords.
+  • Provide exactly 5–6 items per list.
+
+VERDICT RULES:
+  • match_score >= 85  →  ats_verdict: "Strong Match"
+  • match_score 65–84  →  ats_verdict: "Moderate Match"
+  • match_score < 65   →  ats_verdict: "Weak Match"
+  • ats_pass_rate: realistic range string, e.g. "85% – 90%"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RETURN exactly this JSON — every field is required, no extras, no markdown:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{
+  "match_score":        <integer>,
+  "skills_match":       <integer>,
+  "experience_match":   <integer>,
+  "education_match":    <integer>,
+  "projects_match":     <integer>,
+
+  "matched_keywords": ["skill", "skill", "skill", "skill", "skill"],
+  "missing_keywords": ["skill", "skill", "skill", "skill", "skill"],
+
+  "top_strengths": ["strength1", "strength2", "strength3", "strength4", "strength5", "strength6"],
+  "skill_gap":     ["gap1", "gap2", "gap3", "gap4", "gap5"],
+
+  "recommendations": [
+    "Actionable improvement tip 1.",
+    "Actionable improvement tip 2.",
+    "Actionable improvement tip 3.",
+    "Actionable improvement tip 4."
+  ],
+
+  "interview_questions": [
+    "Question based on a skill gap?",
+    "Question 2?",
+    "Question 3?",
+    "Question 4?"
+  ],
+
+  "resume_improvements": [
+    {{
+      "current":   "Short paraphrase of weak resume bullet.",
+      "suggested": "Stronger metric-driven rewrite of that bullet."
+    }},
+    {{
+      "current":   "Another weak bullet paraphrase.",
+      "suggested": "Its stronger rewrite."
+    }}
+  ],
+
+  "ats_verdict":  "Strong Match" or "Moderate Match" or "Weak Match",
+  "ats_pass_rate": "XX% – YY%"
+}}
+
+Job Description:
+{job_description}
+
+Candidate Resume:
+{extracted_text}
+"""
+
+        response = model.generate_content(prompt)
+        raw_text = response.text.strip()
+
+        # Strip markdown code fences Gemini sometimes adds
+        if raw_text.startswith("```"):
+            lines = raw_text.split('\n')
+            # remove first and last fence lines
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            raw_text = '\n'.join(lines).strip()
+
+        ai = json.loads(raw_text)
+
+    except json.JSONDecodeError as e:
+        return jsonify({"error": f"AI returned invalid JSON: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"AI processing failed: {str(e)}"}), 500
+
+    # ── 4. Validate & fill defaults for every field ─────────────
+    def safe_int(val, default=0):
         try:
-            with open(filepath, 'rb') as pdf_file:
-                reader = PyPDF2.PdfReader(pdf_file)
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        extracted_text += text
-        except Exception as e:
-            return jsonify({"error": f"Failed to read PDF: {str(e)}"}), 500
+            return int(val)
+        except (TypeError, ValueError):
+            return default
 
-        # 2. Ask Gemini to Compare the Resume vs. the JD
-        try:
-            active_key = get_next_api_key()
-            genai.configure(api_key=active_key)
+    def safe_list(val, default_item="N/A", min_len=1):
+        if isinstance(val, list) and len(val) >= min_len:
+            return [str(v) for v in val]
+        return [default_item]
 
-            # Using 2.5-flash-latest to avoid the rate limits we hit earlier!
-            model = genai.GenerativeModel(
-                'gemini-2.5-flash',
-                generation_config={"response_mime_type": "application/json"}
-            )
+    def safe_str(val, fallback):
+        return str(val).strip() if val else fallback
 
-            prompt = f"""
-            You are a strict ATS (Applicant Tracking System) algorithm.
-            Compare the provided Resume against the provided Job Description.
-            
-            Return the result as a JSON response with exactly these keys:
-            - "match_score": an integer out of 100 representing how well the resume matches the JD.
-            - "matched_keywords": an array of strings (top 5 important skills/keywords present in BOTH).
-            - "missing_keywords": an array of strings (top 5 critical skills/keywords present in the JD but MISSING from the resume).
-            - "recommendation": A short, friendly 1-sentence tip on how to improve their chances for this specific role.
+    # Clamp match_score based on missing keyword count
+    missing_count = len(ai.get("missing_keywords", []))
+    score = safe_int(ai.get("match_score"), 80)
 
-            Job Description:
-            {job_description}
+    if missing_count >= 8 and score >= 70:
+        score = min(score, 69)
+    elif missing_count >= 5 and score >= 80:
+        score = min(score, 79)
+    elif missing_count >= 2 and score >= 90:
+        score = min(score, 89)
+    elif missing_count >= 1 and score >= 96:
+        score = min(score, 95)
 
-            Candidate's Resume:
-            {extracted_text}
-            """
+    # Derive verdict from final clamped score
+    if score >= 85:
+        verdict = "Strong Match"
+        pass_rate = f"{score}% – {min(score + 5, 100)}%"
+    elif score >= 65:
+        verdict = "Moderate Match"
+        pass_rate = f"{score - 5}% – {score}%"
+    else:
+        verdict = "Weak Match"
+        pass_rate = f"{max(score - 10, 0)}% – {score}%"
 
-            response = model.generate_content(prompt)
-            ai_analysis = json.loads(response.text)
+    # Build clean validated result
+    clean_result = {
+        "match_score":          score,
+        "skills_match":         safe_int(ai.get("skills_match"),     75),
+        "experience_match":     safe_int(ai.get("experience_match"), 70),
+        "education_match":      safe_int(ai.get("education_match"),  80),
+        "projects_match":       safe_int(ai.get("projects_match"),   70),
+        "matched_keywords":     safe_list(ai.get("matched_keywords"),  "N/A"),
+        "missing_keywords":     safe_list(ai.get("missing_keywords"),  "N/A"),
+        "top_strengths":        safe_list(ai.get("top_strengths"),     "Review resume"),
+        "skill_gap":            safe_list(ai.get("skill_gap"),         "No major gaps"),
+        "recommendations":      safe_list(ai.get("recommendations"),   "Tailor resume to JD keywords."),
+        "interview_questions":  safe_list(ai.get("interview_questions"), "Tell me about your relevant experience."),
+        "resume_improvements":  ai.get("resume_improvements") if isinstance(ai.get("resume_improvements"), list) and len(ai.get("resume_improvements", [])) > 0
+                                else [{"current": "Add relevant bullet", "suggested": "Quantify your impact with metrics."}],
+        "ats_verdict":          verdict,
+        "ats_pass_rate":        safe_str(ai.get("ats_pass_rate"), pass_rate) or pass_rate,
+    }
 
-            return jsonify({
-                "message": "Match analysis complete!",
-                "results": ai_analysis
-            })
-
-        except Exception as e:
-            return jsonify({"error": f"AI processing failed. Error: {str(e)}"}), 500
-
-    return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
-
-
+    return jsonify({
+        "message": "Match analysis complete!",
+        "results": clean_result
+    })
 @app.route('/api/dashboard-data', methods=['GET'])
 def get_dashboard_data():
     # 1. Look at who is asking for data (we will send the email from React)
