@@ -16,10 +16,10 @@ const Sidebar = () => {
 
   const menuItems = [
     { name: 'Dashboard', path: '/', icon: <LayoutDashboard size={20} /> },
-    { name: 'Resume', path: '/resume', icon: <FileText size={20} /> },
+    { name: 'Resume Analyser', path: '/resume', icon: <FileText size={20} /> },
     { name: 'Resume Builder', path: '/builder', icon: <FileEdit size={20} /> },
     { name: 'Cover Letter', path: '/cover-letter', icon: <PenTool size={20} /> },
-    { name: 'Jobs', path: '/jobs', icon: <Briefcase size={20} /> },
+    { name: 'Job Match', path: '/jobs', icon: <Briefcase size={20} /> },
     { name: 'Learning', path: '/learning', icon: <GraduationCap size={20} /> },
     { name: 'Insights', path: '/insights', icon: <LineChart size={20} /> },
     { name: 'AI Assistant', path: '/ai-assistant', icon: <Bot size={20} /> },

@@ -1,10 +1,12 @@
 import { useState, useRef } from 'react';
 import { UploadCloud, FileText, Loader2, Copy, CheckCircle, AlertCircle } from 'lucide-react';
+import ReactMarkdown from 'react-markdown'; // <-- NEW IMPORT
 
 const CoverLetter = () => {
   const [file, setFile] = useState(null);
   const [jobTitle, setJobTitle] = useState('');
   const [companyName, setCompanyName] = useState('');
+  const [jobDescription, setJobDescription] = useState(''); // <-- NEW STATE
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedLetter, setGeneratedLetter] = useState('');
   const [error, setError] = useState(null);
@@ -23,7 +25,7 @@ const CoverLetter = () => {
   };
 
   const handleGenerate = async () => {
-    // Check if the user filled out all the fields
+    // Check if the user filled out all the required fields
     if (!file) {
       setError("Please upload your resume first.");
       return;
@@ -43,9 +45,12 @@ const CoverLetter = () => {
     formData.append('file', file);
     formData.append('job_title', jobTitle);
     formData.append('company_name', companyName);
+    
+    // --> NEW: Append the job description (it's fine if it's empty)
+    formData.append('job_description', jobDescription); 
 
     try {
-      // Send the package to our new Flask route!
+      // Send the package to your Flask backend
       const response = await fetch('https://career-enhancer-us-backend.onrender.com/api/generate-cover-letter', {
         method: 'POST',
         body: formData,
@@ -65,7 +70,7 @@ const CoverLetter = () => {
     }
   };
 
-  // A small helper function so users can easily copy the result
+  // Helper function so users can easily copy the result
   const handleCopy = () => {
     navigator.clipboard.writeText(generatedLetter);
     setCopied(true);
@@ -85,7 +90,7 @@ const CoverLetter = () => {
         <div className="lg:col-span-4 bg-white rounded-2xl shadow-sm border border-slate-100 p-6 flex flex-col h-fit space-y-5">
           
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Target Job Title</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">Target Job Title *</label>
             <input 
               type="text" 
               placeholder="e.g. Data Analyst" 
@@ -96,7 +101,7 @@ const CoverLetter = () => {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Target Company</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">Target Company *</label>
             <input 
               type="text" 
               placeholder="e.g. Google" 
@@ -106,8 +111,23 @@ const CoverLetter = () => {
             />
           </div>
 
+          {/* NEW JD INPUT FIELD */}
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Upload Resume</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">
+              Job Description <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            <p className="text-xs text-slate-500 mb-2">Paste the JD to tailor your letter and highlight matching skills.</p>
+            <textarea 
+              rows={4}
+              placeholder="Paste job requirements here..." 
+              value={jobDescription}
+              onChange={(e) => setJobDescription(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 resize-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">Upload Resume *</label>
             <input 
               type="file" 
               accept=".pdf" 
@@ -171,8 +191,9 @@ const CoverLetter = () => {
                 <p className="text-sm">Reading your resume and drafting a tailored letter...</p>
               </div>
             ) : generatedLetter ? (
-              <div className="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap animate-in fade-in duration-500">
-                {generatedLetter}
+              /* NEW: Using ReactMarkdown so **bold** tags actually render nicely */
+              <div className="text-slate-700 text-sm leading-relaxed prose prose-slate max-w-none animate-in fade-in duration-500">
+                <ReactMarkdown>{generatedLetter}</ReactMarkdown>
               </div>
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-slate-400">
