@@ -10,6 +10,7 @@ import google.generativeai as genai
 import io
 from fpdf import FPDF
 import gc
+import docx
 import time
 
 # Load environment variables from the .env file
@@ -115,17 +116,49 @@ def upload_resume():
             )
 
             prompt = f"""
-            You are an expert Technical Recruiter AND a Supportive, Empathetic Career Mentor.
-            Analyze the following resume text and provide a JSON response with exactly these keys:
-            - "overall_score": an integer out of 100. (Be fair and encouraging; score based on potential and structure, not just strict experience).
-            - "ats_score": an integer out of 100 representing ATS compatibility and formatting.
-            - "missing_skills": an array of strings (top 3 valuable missing skills based on their target tech/data role).
-            - "suggestions": an array of strings (3 highly actionable, specific improvements to increase the score).
+            You are an expert Technical Recruiter and an Honest, Realistic Career Mentor.
 
-            CRITICAL TONE INSTRUCTIONS FOR SUGGESTIONS:
-            - Write the "suggestions" in a warm, encouraging, and human-friendly tone. 
-            - Address the user directly (e.g., "Consider updating...", "You have a great foundation in X, to make it even stronger...").
-            - Instead of harsh critiques (like calling things "red flags" or "errors"), frame them as exciting opportunities to stand out to recruiters. Keep sentences concise but friendly.
+            CRITICAL SCORING RULES:
+            1. First, identify the candidate's career stage (e.g., Student, Fresher, Mid-Level, Senior).
+            2. Score the resume FAIRLY based ONLY on expectations for their specific career stage.
+               Do NOT penalize a student/fresher for not having 5+ years of experience. A strong,
+               well-formatted fresher resume with good projects MUST score highly (75-95). Be honest
+               but realistic.
+
+            Return ONLY a single valid JSON object (no markdown, no commentary) with EXACTLY these keys:
+
+            - "overall_score": integer 0-100. Weighted overall ATS/recruiter score for their career stage.
+            - "potential_score": integer 0-100. Realistic score they could reach if they applied your
+               suggestions. Must be >= overall_score (typically 8-20 points higher).
+            - "format_score": integer 0-100. How clean / ATS-parseable the formatting and structure is.
+            - "skills_match_score": integer 0-100. How well their listed skills match their target
+               role/domain (infer the target role from the resume itself).
+            - "experience_score": integer 0-100. Strength and relevance of experience/projects for
+               their career stage.
+            - "impact_score": integer 0-100. How well bullet points show quantified, measurable impact
+               (numbers, %, scale) rather than vague duties.
+            - "matched_skills": array of 3-8 short strings. Real skills/tools found in the resume that
+               are valuable for their target role.
+            - "missing_skills": array of 2-5 short strings. Highly valuable skills/tools for their
+               target role/industry that are missing from the resume.
+            - "suggestions": array of 4-6 objects, ordered by score_impact DESCENDING (highest impact
+               first), each with EXACTLY these keys:
+                 - "title": short string, 3-6 words, e.g. "Quantify Experience Bullet Points"
+                 - "description": one sentence, 10-25 words, plain human language, no jargon.
+                 - "severity": one of "high", "medium", "low" (high = biggest score blocker).
+                 - "score_impact": integer 2-8. Estimated points this fix could add to overall_score.
+                 - "type": either "rewrite" or "keywords".
+                     - If "type" is "rewrite": include "current" (a short verbatim-style weak bullet
+                       point pulled or closely modeled from their resume, max 20 words) and "suggested"
+                       (an improved, quantified rewrite of it, max 25 words).
+                     - If "type" is "keywords": include "keywords" (array of 2-4 short strings — specific
+                       missing keywords/skills/methodologies relevant to their inferred target role) and
+                       omit "current"/"suggested".
+               Use "type": "keywords" for at least one suggestion (about missing keywords/skills), and
+               "type": "rewrite" for the rest (about weak bullet points, missing metrics, formatting, etc).
+
+            All "score" type fields must be integers, not strings. Do not include any keys other than
+            the ones listed above.
 
             Resume Text:
             {extracted_text}
@@ -133,6 +166,17 @@ def upload_resume():
 
             response = model.generate_content(prompt)
             ai_analysis = json.loads(response.text)
+
+            # Defensive defaults in case the model omits a key
+            ai_analysis.setdefault('overall_score', 0)
+            ai_analysis.setdefault('potential_score', ai_analysis.get('overall_score', 0))
+            ai_analysis.setdefault('format_score', 0)
+            ai_analysis.setdefault('skills_match_score', 0)
+            ai_analysis.setdefault('experience_score', 0)
+            ai_analysis.setdefault('impact_score', 0)
+            ai_analysis.setdefault('matched_skills', [])
+            ai_analysis.setdefault('missing_skills', [])
+            ai_analysis.setdefault('suggestions', [])
 
             # 3. Save Everything to the MySQL Database
             conn = get_db_connection()
@@ -154,9 +198,15 @@ def upload_resume():
 
                 # Insert the resume and AI scores into the Resumes table
                 cursor.execute("""
-                    INSERT INTO Resumes (user_id, file_name, parsed_text, overall_score, ats_score) 
+                    INSERT INTO Resumes (user_id, file_name, parsed_text, overall_score, ats_score)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (user_id, file.filename, extracted_text[:1000], ai_analysis.get('overall_score'), ai_analysis.get('ats_score')))
+                """, (
+                    user_id,
+                    file.filename,
+                    extracted_text[:1000],
+                    ai_analysis.get('overall_score'),
+                    ai_analysis.get('format_score'),  # ats_score column now stores format_score
+                ))
                 conn.commit()
 
                 cursor.close()
@@ -171,9 +221,8 @@ def upload_resume():
         except Exception as e:
             return jsonify({"error": f"AI processing or Database save failed. Error: {str(e)}"}), 500
 
-    return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
-
-
+    return jsonify({"error": "Only PDF files are currently supported."}), 400  
+    
 @app.route('/api/generate-cover-letter', methods=['POST'])
 def generate_cover_letter():
     # 1. Grab the uploaded file and the typed text from the frontend
@@ -183,6 +232,9 @@ def generate_cover_letter():
     file = request.files['file']
     job_title = request.form.get('job_title', 'a relevant role')
     company_name = request.form.get('company_name', 'your company')
+    
+    # NEW: Safely grab the optional job description from the frontend
+    job_description = request.form.get('job_description', '').strip()
 
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
@@ -213,24 +265,53 @@ def generate_cover_letter():
                 generation_config={"response_mime_type": "application/json"}
             )
 
-            prompt = f"""
-            You are a modern career coach and a friendly, expert copywriter.
-            Write an ultra-concise, highly conversational, and human-friendly cover letter for the following job.
-            
-            Target Job Title: {job_title}
-            Target Company: {company_name}
-            
-            CRITICAL INSTRUCTIONS:
-            1. Keep it extremely short (under 150 words total). 
-            2. Sound like a real human. Use a warm, enthusiastic, and conversational tone. Do NOT use stiff, outdated corporate jargon (e.g., avoid phrases like "I am writing to express my enthusiastic interest").
-            3. Get straight to the point. Include a very brief introduction, 2 to 3 short bullet points highlighting their absolute best metrics/projects from the resume, and a quick wrap-up.
-            4. Do not invent any experience the candidate does not have.
-            
-            Return the result as a JSON response with a single key "cover_letter" containing the formatted text. Keep the formatting clean with line breaks.
+            # NEW: Check if the user provided a JD
+            if job_description:
+                # --- PROMPT WITH JD ---
+                # Matches your style, but adds JD cross-referencing and markdown bolding
+                prompt = f"""
+                You are a modern career coach and a friendly, expert copywriter.
+                Write an ultra-concise, highly conversational, and human-friendly cover letter for the following job.
+                
+                Target Job Title: {job_title}
+                Target Company: {company_name}
+                
+                Here is the Target Job Description:
+                {job_description}
+                
+                CRITICAL INSTRUCTIONS:
+                1. Keep it extremely short (under 150 words total). 
+                2. Sound like a real human. Use a warm, enthusiastic, and conversational tone. Do NOT use stiff, outdated corporate jargon.
+                3. Get straight to the point. Include a very brief introduction, 2 to 3 short bullet points highlighting their absolute best metrics/projects from the resume that DIRECTLY MATCH the Job Description, and a quick wrap-up.
+                4. CRITICAL HIGHLIGHTING: Whenever you mention a skill, tool, or experience in the cover letter that matches a requirement in the Job Description, you MUST wrap it in markdown bold tags (e.g., **React.js** or **Data Analysis**).
+                5. Do not invent any experience the candidate does not have.
+                
+                Return the result as a JSON response with a single key "cover_letter" containing the formatted text. Keep the formatting clean with line breaks.
 
-            Candidate's Resume Text:
-            {extracted_text}
-            """
+                Candidate's Resume Text:
+                {extracted_text}
+                """
+            else:
+                # --- PROMPT WITHOUT JD ---
+                # This is EXACTLY the prompt you provided above
+                prompt = f"""
+                You are a modern career coach and a friendly, expert copywriter.
+                Write an ultra-concise, highly conversational, and human-friendly cover letter for the following job.
+                
+                Target Job Title: {job_title}
+                Target Company: {company_name}
+                
+                CRITICAL INSTRUCTIONS:
+                1. Keep it extremely short (under 150 words total). 
+                2. Sound like a real human. Use a warm, enthusiastic, and conversational tone. Do NOT use stiff, outdated corporate jargon (e.g., avoid phrases like "I am writing to express my enthusiastic interest").
+                3. Get straight to the point. Include a very brief introduction, 2 to 3 short bullet points highlighting their absolute best metrics/projects from the resume, and a quick wrap-up.
+                4. Do not invent any experience the candidate does not have.
+                
+                Return the result as a JSON response with a single key "cover_letter" containing the formatted text. Keep the formatting clean with line breaks.
+
+                Candidate's Resume Text:
+                {extracted_text}
+                """
 
             response = model.generate_content(prompt)
             ai_analysis = json.loads(response.text)
@@ -244,7 +325,6 @@ def generate_cover_letter():
             return jsonify({"error": f"AI processing failed. Error: {str(e)}"}), 500
 
     return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
-
 
 @app.route('/api/match-resume', methods=['POST'])
 def match_resume():
