@@ -21,10 +21,6 @@ const ResumeAnalyzer = () => {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
 
-  // States for the Apply button
-  const [isApplying, setIsApplying] = useState(false);
-  const [appliedSuccess, setAppliedSuccess] = useState(false);
-
   const { user, isLoaded, isSignedIn } = useUser();
   const fileInputRef = useRef(null);
 
@@ -39,7 +35,6 @@ const ResumeAnalyzer = () => {
       setFile(selectedFile);
       setError(null);
       setResults(null);
-      setAppliedSuccess(false);
     } else {
       setError('Please select a valid PDF or DOCX file.');
       setFile(null);
@@ -58,7 +53,6 @@ const ResumeAnalyzer = () => {
       setFile(droppedFile);
       setError(null);
       setResults(null);
-      setAppliedSuccess(false);
     } else {
       setError('Please select a valid PDF or DOCX file.');
       setFile(null);
@@ -71,7 +65,6 @@ const ResumeAnalyzer = () => {
     setIsAnalyzing(true);
     setError(null);
     setResults(null);
-    setAppliedSuccess(false);
 
     const formData = new FormData();
     formData.append('file', file);
@@ -102,19 +95,6 @@ const ResumeAnalyzer = () => {
     } finally {
       setIsAnalyzing(false);
     }
-  };
-
-  const handleApplyImprovements = () => {
-    setIsApplying(true);
-
-    // Simulating applying updates to the resume builder
-    setTimeout(() => {
-      setIsApplying(false);
-      setAppliedSuccess(true);
-
-      // Reset button after 3 seconds
-      setTimeout(() => setAppliedSuccess(false), 3000);
-    }, 1500);
   };
 
   // ---- derived display helpers ----
@@ -284,33 +264,9 @@ const ResumeAnalyzer = () => {
                 <h3 className="font-bold text-slate-900">AI Suggestions</h3>
               </div>
 
-              {results ? (
-                <button
-                  onClick={handleApplyImprovements}
-                  disabled={isApplying || appliedSuccess}
-                  className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 ${
-                    appliedSuccess
-                      ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                      : 'bg-indigo-700 hover:bg-indigo-800 text-white'
-                  }`}
-                >
-                  {isApplying ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin" /> Applying...
-                    </>
-                  ) : appliedSuccess ? (
-                    <>
-                      <CheckCircle size={14} /> Applied!
-                    </>
-                  ) : (
-                    'Apply Top Fixes'
-                  )}
-                </button>
-              ) : (
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg">
-                  Filter by: Impact (High to Low)
-                </div>
-              )}
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg">
+                Filter by: Impact (High to Low)
+              </div>
             </div>
 
             <div className="p-5 space-y-4 max-h-[560px] overflow-y-auto">
