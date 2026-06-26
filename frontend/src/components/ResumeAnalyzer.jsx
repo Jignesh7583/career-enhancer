@@ -111,14 +111,14 @@ const ResumeAnalyzer = () => {
     return { label: 'Low', cls: 'bg-red-100 text-red-700' };
   };
 
-  const severityIcon = (severity) => {
-    if (severity === 'high')
+  const priorityIcon = (priority) => {
+    if (priority === 'high')
       return (
         <span className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center">
           <AlertTriangle size={16} className="text-red-500" />
         </span>
       );
-    if (severity === 'low')
+    if (priority === 'low')
       return (
         <span className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center">
           <Info size={16} className="text-indigo-500" />
@@ -131,12 +131,19 @@ const ResumeAnalyzer = () => {
     );
   };
 
-  // Sort suggestions by score_impact (High to Low), defensively handling missing values
+  // Sort suggestions by priority (High to Low), defensively handling missing/unknown values
+  const priorityRank = { high: 3, medium: 2, low: 1 };
   const sortedSuggestions = results?.suggestions
     ? [...results.suggestions].sort(
-        (a, b) => (b.score_impact ?? 0) - (a.score_impact ?? 0)
+        (a, b) => (priorityRank[b.priority] ?? 0) - (priorityRank[a.priority] ?? 0)
       )
     : [];
+
+  const priorityBadge = (priority) => {
+    if (priority === 'high') return { label: 'High Priority', cls: 'bg-red-600 text-white' };
+    if (priority === 'low') return { label: 'Low Priority', cls: 'bg-slate-400 text-white' };
+    return { label: 'Medium Priority', cls: 'bg-amber-500 text-white' };
+  };
 
   const metrics = [
     {
@@ -169,7 +176,7 @@ const ResumeAnalyzer = () => {
     <div className="max-w-6xl mx-auto space-y-6">
       {/* Page Header */}
       <div>
-        <h2 className="text-3xl font-extrabold text-slate-900">Resume Analyzer</h2>
+        <h2 className="text-2xl font-bold text-slate-800">Resume Analyzer</h2>
         <p className="text-slate-500 mt-1">
           Upload your resume to receive an AI-powered ATS analysis and actionable improvement
           suggestions.
@@ -177,9 +184,9 @@ const ResumeAnalyzer = () => {
       </div>
 
       {/* Main Layout Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
         {/* LEFT / MAIN COLUMN (span 2) */}
-        <div className="lg:col-span-2 flex flex-col gap-6">
+        <div className="lg:col-span-2 flex flex-col gap-6 min-h-0">
           {/* Upload Box */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
             <input
@@ -257,19 +264,19 @@ const ResumeAnalyzer = () => {
           </div>
 
           {/* AI Suggestions */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="flex justify-between items-center p-5 border-b border-slate-100">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex-1 flex flex-col min-h-0">
+            <div className="flex justify-between items-center p-5 border-b border-slate-100 shrink-0">
               <div className="flex items-center gap-2">
                 <Sparkles size={18} className="text-indigo-600" />
                 <h3 className="font-bold text-slate-900">AI Suggestions</h3>
               </div>
 
               <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg">
-                Filter by: Impact (High to Low)
+                Filter by: Priority (High to Low)
               </div>
             </div>
 
-            <div className="p-5 space-y-4 max-h-[560px] overflow-y-auto">
+            <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-[400px]">
               {results && sortedSuggestions.length > 0 ? (
                 sortedSuggestions.map((s, index) => (
                   <div
@@ -278,14 +285,19 @@ const ResumeAnalyzer = () => {
                   >
                     <div className="flex items-start justify-between gap-3 mb-2">
                       <div className="flex items-start gap-2.5">
-                        {severityIcon(s.severity)}
+                        {priorityIcon(s.priority)}
                         <h4 className="font-bold text-slate-900 leading-snug pt-1">{s.title}</h4>
                       </div>
-                      {typeof s.score_impact === 'number' && (
-                        <span className="shrink-0 flex items-center gap-1 bg-indigo-700 text-white text-xs font-bold px-2.5 py-1 rounded-full">
-                          <ArrowUp size={12} /> +{s.score_impact} Score
-                        </span>
-                      )}
+                      {(() => {
+                        const badge = priorityBadge(s.priority);
+                        return (
+                          <span
+                            className={`shrink-0 flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${badge.cls}`}
+                          >
+                            {badge.label}
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     <p className="text-sm text-slate-500 mb-3 pl-[42px]">{s.description}</p>

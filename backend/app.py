@@ -111,7 +111,16 @@ def upload_resume():
 
             model = genai.GenerativeModel(
                 'gemini-2.5-flash',
-                generation_config={"response_mime_type": "application/json"}
+                generation_config={
+                    "response_mime_type": "application/json",
+                    # Deterministic settings: same resume text in -> same scores/output out.
+                    # temperature=0 removes sampling randomness; seed pins the generation
+                    # so repeated calls with identical input converge on the same result.
+                    "temperature": 0,
+                    "top_p": 1,
+                    "top_k": 1,
+                    "seed": 42,
+                }
             )
 
             prompt = f"""
@@ -123,12 +132,20 @@ def upload_resume():
                Do NOT penalize a student/fresher for not having 5+ years of experience. A strong,
                well-formatted fresher resume with good projects MUST score highly (75-95). Be honest
                but realistic.
+            3. Be CONSISTENT: given the same resume text, you must always return the same scores and
+               the same suggestions. Do not introduce arbitrary variation between runs. Base every
+               number strictly on evidence in the text, not on guesswork or randomness.
+            4. Do NOT invent a precise numeric score increase for any individual suggestion (e.g. do
+               not claim a single bullet rewrite adds exactly "+8 points") — that is not something you
+               can honestly estimate. Instead, classify each suggestion's importance using "priority"
+               (see below).
 
             Return ONLY a single valid JSON object (no markdown, no commentary) with EXACTLY these keys:
 
             - "overall_score": integer 0-100. Weighted overall ATS/recruiter score for their career stage.
-            - "potential_score": integer 0-100. Realistic score they could reach if they applied your
-               suggestions. Must be >= overall_score (typically 8-20 points higher).
+            - "potential_score": integer 0-100. Realistic score they could reach if they applied ALL
+               suggestions together. Must be >= overall_score (typically 5-15 points higher, never
+               inflate this).
             - "format_score": integer 0-100. How clean / ATS-parseable the formatting and structure is.
             - "skills_match_score": integer 0-100. How well their listed skills match their target
                role/domain (infer the target role from the resume itself).
@@ -140,12 +157,12 @@ def upload_resume():
                are valuable for their target role.
             - "missing_skills": array of 2-5 short strings. Highly valuable skills/tools for their
                target role/industry that are missing from the resume.
-            - "suggestions": array of 4-6 objects, ordered by score_impact DESCENDING (highest impact
-               first), each with EXACTLY these keys:
+            - "suggestions": array of 4-6 objects, ordered by priority DESCENDING (high priority first),
+               each with EXACTLY these keys:
                  - "title": short string, 3-6 words, e.g. "Quantify Experience Bullet Points"
                  - "description": one sentence, 10-25 words, plain human language, no jargon.
-                 - "severity": one of "high", "medium", "low" (high = biggest score blocker).
-                 - "score_impact": integer 2-8. Estimated points this fix could add to overall_score.
+                 - "priority": one of "high", "medium", "low" — how much this issue is holding back
+                    the resume relative to the other suggestions. "high" = biggest blocker, fix first.
                  - "type": either "rewrite" or "keywords".
                      - If "type" is "rewrite": include "current" (a short verbatim-style weak bullet
                        point pulled or closely modeled from their resume, max 20 words) and "suggested"
@@ -157,7 +174,7 @@ def upload_resume():
                "type": "rewrite" for the rest (about weak bullet points, missing metrics, formatting, etc).
 
             All "score" type fields must be integers, not strings. Do not include any keys other than
-            the ones listed above.
+            the ones listed above. Do not include a numeric score_impact field anywhere.
 
             Resume Text:
             {extracted_text}
@@ -176,6 +193,12 @@ def upload_resume():
             ai_analysis.setdefault('matched_skills', [])
             ai_analysis.setdefault('missing_skills', [])
             ai_analysis.setdefault('suggestions', [])
+
+            # Strip any legacy score_impact field if an older cached/model response includes it
+            for s in ai_analysis.get('suggestions', []):
+                if isinstance(s, dict):
+                    s.pop('score_impact', None)
+                    s.setdefault('priority', 'medium')
 
             # 3. Save Everything to the MySQL Database
             conn = get_db_connection()
@@ -220,7 +243,7 @@ def upload_resume():
         except Exception as e:
             return jsonify({"error": f"AI processing or Database save failed. Error: {str(e)}"}), 500
 
-    return jsonify({"error": "Only PDF files are currently supported."}), 400  
+    return jsonify({"error": "Only PDF files are currently supported."}), 400
     
 @app.route('/api/generate-cover-letter', methods=['POST'])
 def generate_cover_letter():
@@ -328,210 +351,177 @@ def generate_cover_letter():
 
 @app.route('/api/match-resume', methods=['POST'])
 def match_resume():
-    # ── 1. Validate inputs ──────────────────────────────────────
     if 'file' not in request.files:
         return jsonify({"error": "No resume file uploaded"}), 400
 
-    file            = request.files['file']
-    job_description = request.form.get('job_description', '').strip()
+    file = request.files['file']
+    job_description = request.form.get('job_description', '')
 
-    if not job_description:
+    if not job_description.strip():
         return jsonify({"error": "Please paste a Job Description."}), 400
+
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
-    if not file.filename.lower().endswith('.pdf'):
-        return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
 
-    # ── 2. Save & extract text ──────────────────────────────────
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-    file.save(filepath)
+    if file and file.filename.endswith('.pdf'):
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+        file.save(filepath)
 
-    extracted_text = ""
-    try:
-        with open(filepath, 'rb') as pdf_file:
-            reader = PyPDF2.PdfReader(pdf_file)
-            for page in reader.pages:
-                text = page.extract_text()
-                if text:
-                    extracted_text += text
-    except Exception as e:
-        return jsonify({"error": f"Failed to read PDF: {str(e)}"}), 500
+        # ── 1. Extract text from resume PDF ──
+        extracted_text = ""
+        try:
+            with open(filepath, 'rb') as pdf_file:
+                reader = PyPDF2.PdfReader(pdf_file)
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        extracted_text += text
+        except Exception as e:
+            return jsonify({"error": f"Failed to read PDF: {str(e)}"}), 500
 
-    if not extracted_text.strip():
-        return jsonify({"error": "Could not extract text from PDF. Ensure it is not a scanned image."}), 400
+        # ── 2. Run Gemini ATS analysis ──
+        try:
+            active_key = get_next_api_key()
+            genai.configure(api_key=active_key)
 
-    # ── 3. Call Gemini ──────────────────────────────────────────
-    try:
-        active_key = get_next_api_key()
-        genai.configure(api_key=active_key)
+            model = genai.GenerativeModel(
+                'gemini-2.5-flash',
+                generation_config={"response_mime_type": "application/json"}
+            )
 
-        model = genai.GenerativeModel(
-            'gemini-2.5-flash',
-            generation_config={"response_mime_type": "application/json"}
-        )
+            prompt = f"""
+You are a strict, calibrated ATS (Applicant Tracking System) algorithm and expert resume analyst.
 
-        prompt = f"""
-You are a strict, senior ATS (Applicant Tracking System) engine combined with an expert technical recruiter.
-Analyze the Resume against the Job Description and return a JSON object.
+Carefully read the Resume and the Job Description below, then produce a structured analysis.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SCORING RULES — follow exactly, do NOT override:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Step 1 — Count critical skills/technologies mentioned in the JD that are ABSENT from the resume.
-Step 2 — Set match_score using this table:
-  • 0–1 missing  →  match_score: 90–95
-  • 2–4 missing  →  match_score: 80–89
-  • 5–7 missing  →  match_score: 70–79
-  • 8+  missing  →  match_score: below 70
-Step 3 — Set sub-scores:
-  • skills_match     → % of required technical skills found in resume (integer 0–100)
-  • experience_match → % alignment of required years/domain/roles  (integer 0–100)
-  • education_match  → % match of required degrees/certifications  (integer 0–100)
-  • projects_match   → % of required project types covered by resume (integer 0–100)
+════════════════════════════════════════
+HONESTY REQUIREMENT — APPLIES TO EVERY FIELD BELOW
+════════════════════════════════════════
+Every field you output must be grounded in the actual text of the Resume and the Job Description.
+Never invent a strength, gap, keyword, quote, or question that isn't actually supported by the
+text in front of you. If the resume is a weak match, say so plainly in the scores and strengths —
+do not soften or inflate anything to be encouraging. If you're unsure whether a skill genuinely
+counts as demonstrated, treat it as MISSING rather than giving the benefit of the doubt.
 
-KEYWORD FORMAT RULES:
-  • matched_keywords and missing_keywords must be SHORT skill names (1–3 words max).
-    e.g. "SQL", "Power BI", "Data Quality", "Dashboard Optimization"
-  • NEVER use full sentences as keywords.
-  • Provide exactly 5–6 items per list.
+════════════════════════════════════════
+SCORING CALIBRATION — WEIGHTED BY IMPORTANCE, NOT JUST A RAW COUNT
+════════════════════════════════════════
+Do the following as an internal step before you output anything (do not show this reasoning in
+the output, only use it to arrive at the final numbers):
 
-VERDICT RULES:
-  • match_score >= 85  →  ats_verdict: "Strong Match"
-  • match_score 65–84  →  ats_verdict: "Moderate Match"
-  • match_score < 65   →  ats_verdict: "Weak Match"
-  • ats_pass_rate: realistic range string, e.g. "85% – 90%"
+1. Extract every distinct skill / tool / technology / concept the Job Description actually
+   requires or asks for.
+2. Classify each one's importance to THIS specific role:
+     - CORE        (weight 3): explicitly required, repeated, or clearly central to the role's
+                                day-to-day work.
+     - IMPORTANT    (weight 2): clearly relevant and expected, but not the main focus of the role.
+     - NICE-TO-HAVE (weight 1): mentioned once, or framed as a "plus" / "preferred" / peripheral.
+3. For each skill, decide PRESENT or MISSING based on real evidence in the resume. Equivalent
+   tools/synonyms count as present (e.g. "Looker Studio" satisfies a general "BI tool"
+   requirement) — you do not need an exact word match, just genuine equivalent evidence.
+4. Compute:
+     total_weight   = sum of the weights of every JD skill identified in step 1
+     matched_weight = sum of the weights of every skill marked PRESENT in step 3
+5. match_score = round(100 * matched_weight / total_weight)
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RETURN exactly this JSON — every field is required, no extras, no markdown:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This means a missing CORE skill should visibly hurt the score, while one or two missing
+NICE-TO-HAVE skills should barely move it. Do NOT use a flat "X skills missing = Y score" bucket
+— calculate match_score from the actual weighted ratio above, every single time, based on the
+specific skills in THIS job description.
+
+Score skills_match, experience_match, education_match, and projects_match the same way —
+independently and honestly, each from only the evidence relevant to that sub-area. Do not default
+any of them to 100 just because the overall match is strong, and do not deflate them either.
+
+════════════════════════════════════════
+CONTENT RULES — FOLLOW EXACTLY
+════════════════════════════════════════
+
+top_strengths — EXACTLY 5 items:
+  • Each must be MAX 5–6 words, a concise skill/strength phrase
+  • GOOD examples: "Strong Python and Pandas skills", "Power BI dashboard expertise",
+    "Machine learning model experience", "EDA and data cleaning skills"
+  • BAD examples: "Strong proficiency in core data science tools: Python (Pandas, NumPy, Scikit-learn)"
+    (too long — never use colons, parentheses, or lists inside a strength)
+
+skill_gap — EXACTLY 5 items:
+  • Each must be MAX 5–6 words, a concise gap phrase
+  • GOOD examples: "SQL subqueries not demonstrated", "No API integration shown",
+    "Dashboard optimization skills missing", "Recommendation systems not mentioned"
+  • BAD examples: "Lack of explicit mention or demonstrated expertise in SQL Subqueries" (too long)
+  • Prioritise CORE/IMPORTANT missing skills over NICE-TO-HAVE ones — list the gaps that actually
+    matter to this role first.
+
+interview_questions — MINIMUM 6, up to 8 items (never fewer than 6):
+  • Must be tailored to THIS specific JD's domain, industry, and required skills, AND to THIS
+    resume's actual background — write the questions a real hiring manager for this exact role
+    would actually ask this exact candidate.
+  • Prioritise questions a candidate genuinely has a HIGH CHANCE of being asked in a real
+    interview for this role/domain. Order them with the most likely/common ones first; do not pad
+    the list with obscure or unrealistic edge-case questions just to hit the count.
+  • Include a mix: some that probe the skill gaps you found, some that test the JD's core
+    requirements, and some scenario/behavioural questions specific to this domain.
+  • NOT generic — never use questions like "Tell me about yourself" or "Where do you see yourself
+    in 5 years".
+
+resume_improvements — 2 to 5 items:
+  • "current": copy an actual weak or vague bullet/phrase from the resume
+  • "suggested": a stronger, quantified, ATS-optimised version of the same bullet
+  • Improvements must be specific, measurable, and relevant to this JD
+
+════════════════════════════════════════
+REQUIRED JSON OUTPUT
+════════════════════════════════════════
+Return ONLY a valid JSON object. No markdown, no extra keys, no explanations.
+
 {{
-  "match_score":        <integer>,
-  "skills_match":       <integer>,
-  "experience_match":   <integer>,
-  "education_match":    <integer>,
-  "projects_match":     <integer>,
+  "match_score":         <integer 0–100, computed from the weighted formula above>,
+  "skills_match":        <integer 0–100, honest independent score>,
+  "experience_match":    <integer 0–100, honest independent score>,
+  "education_match":     <integer 0–100, honest independent score>,
+  "projects_match":      <integer 0–100, honest independent score>,
 
-  "matched_keywords": ["skill", "skill", "skill", "skill", "skill"],
-  "missing_keywords": ["skill", "skill", "skill", "skill", "skill"],
+  "top_strengths":       [exactly 5 strings, each MAX 5–6 words],
+  "skill_gap":           [exactly 5 strings, each MAX 5–6 words, most important gaps first],
+  "matched_keywords":    [5 atomic skill strings],
+  "missing_keywords":    [5 atomic skill strings],
 
-  "top_strengths": ["strength1", "strength2", "strength3", "strength4", "strength5", "strength6"],
-  "skill_gap":     ["gap1", "gap2", "gap3", "gap4", "gap5"],
-
-  "recommendations": [
-    "Actionable improvement tip 1.",
-    "Actionable improvement tip 2.",
-    "Actionable improvement tip 3.",
-    "Actionable improvement tip 4."
-  ],
-
-  "interview_questions": [
-    "Question based on a skill gap?",
-    "Question 2?",
-    "Question 3?",
-    "Question 4?"
-  ],
+  "interview_questions": [6 to 8 domain-specific question strings, most likely-to-be-asked first],
 
   "resume_improvements": [
     {{
-      "current":   "Short paraphrase of weak resume bullet.",
-      "suggested": "Stronger metric-driven rewrite of that bullet."
-    }},
-    {{
-      "current":   "Another weak bullet paraphrase.",
-      "suggested": "Its stronger rewrite."
+      "current":   "<actual weak phrase/bullet from the resume>",
+      "suggested": "<stronger, quantified, ATS-optimised version>"
     }}
   ],
 
-  "ats_verdict":  "Strong Match" or "Moderate Match" or "Weak Match",
-  "ats_pass_rate": "XX% – YY%"
+  "recommendation": "<1 concise sentence: the single most important tip for this role>"
 }}
 
+════════════════════════════════════════
+INPUT
+════════════════════════════════════════
 Job Description:
 {job_description}
 
-Candidate Resume:
+Candidate's Resume:
 {extracted_text}
 """
 
-        response = model.generate_content(prompt)
-        raw_text = response.text.strip()
+            response = model.generate_content(prompt)
+            ai_analysis = json.loads(response.text)
 
-        # Strip markdown code fences Gemini sometimes adds
-        if raw_text.startswith("```"):
-            lines = raw_text.split('\n')
-            # remove first and last fence lines
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            raw_text = '\n'.join(lines).strip()
+            return jsonify({
+                "message": "Match analysis complete!",
+                "results": ai_analysis
+            })
 
-        ai = json.loads(raw_text)
+        except Exception as e:
+            return jsonify({"error": f"AI processing failed. Error: {str(e)}"}), 500
 
-    except json.JSONDecodeError as e:
-        return jsonify({"error": f"AI returned invalid JSON: {str(e)}"}), 500
-    except Exception as e:
-        return jsonify({"error": f"AI processing failed: {str(e)}"}), 500
+    return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
 
-    # ── 4. Validate & fill defaults for every field ─────────────
-    def safe_int(val, default=0):
-        try:
-            return int(val)
-        except (TypeError, ValueError):
-            return default
 
-    def safe_list(val, default_item="N/A", min_len=1):
-        if isinstance(val, list) and len(val) >= min_len:
-            return [str(v) for v in val]
-        return [default_item]
-
-    def safe_str(val, fallback):
-        return str(val).strip() if val else fallback
-
-    # Clamp match_score based on missing keyword count
-    missing_count = len(ai.get("missing_keywords", []))
-    score = safe_int(ai.get("match_score"), 80)
-
-    if missing_count >= 8 and score >= 70:
-        score = min(score, 69)
-    elif missing_count >= 5 and score >= 80:
-        score = min(score, 79)
-    elif missing_count >= 2 and score >= 90:
-        score = min(score, 89)
-    elif missing_count >= 1 and score >= 96:
-        score = min(score, 95)
-
-    # Derive verdict from final clamped score
-    if score >= 85:
-        verdict = "Strong Match"
-        pass_rate = f"{score}% – {min(score + 5, 100)}%"
-    elif score >= 65:
-        verdict = "Moderate Match"
-        pass_rate = f"{score - 5}% – {score}%"
-    else:
-        verdict = "Weak Match"
-        pass_rate = f"{max(score - 10, 0)}% – {score}%"
-
-    # Build clean validated result
-    clean_result = {
-        "match_score":          score,
-        "skills_match":         safe_int(ai.get("skills_match"),     75),
-        "experience_match":     safe_int(ai.get("experience_match"), 70),
-        "education_match":      safe_int(ai.get("education_match"),  80),
-        "projects_match":       safe_int(ai.get("projects_match"),   70),
-        "matched_keywords":     safe_list(ai.get("matched_keywords"),  "N/A"),
-        "missing_keywords":     safe_list(ai.get("missing_keywords"),  "N/A"),
-        "top_strengths":        safe_list(ai.get("top_strengths"),     "Review resume"),
-        "skill_gap":            safe_list(ai.get("skill_gap"),         "No major gaps"),
-        "recommendations":      safe_list(ai.get("recommendations"),   "Tailor resume to JD keywords."),
-        "interview_questions":  safe_list(ai.get("interview_questions"), "Tell me about your relevant experience."),
-        "resume_improvements":  ai.get("resume_improvements") if isinstance(ai.get("resume_improvements"), list) and len(ai.get("resume_improvements", [])) > 0
-                                else [{"current": "Add relevant bullet", "suggested": "Quantify your impact with metrics."}],
-        "ats_verdict":          verdict,
-        "ats_pass_rate":        safe_str(ai.get("ats_pass_rate"), pass_rate) or pass_rate,
-    }
-
-    return jsonify({
-        "message": "Match analysis complete!",
-        "results": clean_result
-    })
 @app.route('/api/dashboard-data', methods=['GET'])
 def get_dashboard_data():
     # 1. Look at who is asking for data (we will send the email from React)
